@@ -19,15 +19,48 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Sync upstream -> upstream (force) incl tags
-        uses: repo-sync/github-sync@v2
-        with:
-          source_repo: "Wolkenschutz/DecorTreasureHunt"
-          source_branch: "main"
-          destination_branch: "upstream"
-          # Use GITHUB_TOKEN so we don't need PAT workflow scope
-          github_token: ${{ github.token }}
-          sync_tags: "true"
+      - name: Mirror upstream -> upstream (force), stripping .github/workflows
+        env:
+          PAT: ${{ secrets.PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          upstream_repo="https://github.com/Wolkenschutz/DecorTreasureHunt.git"
+          upstream_branch="main"
+
+          # Auth origin with PAT (no workflow scope needed since we won't push workflow files)
+          git remote set-url origin "https://x-access-token:${PAT}@github.com/${REPO}.git"
+
+          # Add/fetch upstream
+          if ! git remote get-url tmp_upstream >/dev/null 2>&1; then
+            git remote add tmp_upstream "$upstream_repo"
+          fi
+          git fetch tmp_upstream "$upstream_branch" --force
+          git fetch tmp_upstream --tags --force || true
+
+          # Create a local branch from upstream tip
+          git checkout -B _mirror "tmp_upstream/${upstream_branch}"
+
+          # Strip upstream workflows so pushes don't touch .github/workflows/*
+          rm -rf .github/workflows || true
+          git add -A
+
+          # If stripping changed anything, commit it; otherwise keep identical tree
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "Mirror upstream (strip workflows)"
+          fi
+
+          # Force push to the mirror's upstream branch
+          git push origin HEAD:upstream --force
+
+          # Record the *true* upstream SHA and the mirror commit SHA for later steps
+          upstream_sha="$(git rev-parse "tmp_upstream/${upstream_branch}")"
+          mirror_sha="$(git rev-parse HEAD)"
+          echo "UPSTREAM_SHA=${upstream_sha}" >> "$GITHUB_ENV"
+          echo "MIRROR_SHA=${mirror_sha}" >> "$GITHUB_ENV"
 
       - name: Fetch updated upstream branch + tags
         run: |
@@ -39,8 +72,9 @@ jobs:
         id: meta
         run: |
           set -euo pipefail
-          up_sha="$(git rev-parse origin/upstream)"
-          short="$(git rev-parse --short=8 origin/upstream)"
+          # Tag is based on the *real* upstream commit, even though we push a stripped mirror commit
+          up_sha="${UPSTREAM_SHA}"
+          short="$(printf "%s" "$up_sha" | cut -c1-8)"
           tag="upstream-${short}"
           echo "up_sha=${up_sha}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
@@ -56,33 +90,30 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create and push tag for this upstream commit (token auth)
+      - name: Create and push tag for this mirrored commit (PAT auth)
         if: steps.skip.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          PAT: ${{ secrets.PAT }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${{ steps.meta.outputs.tag }}"
-          up_sha="${{ steps.meta.outputs.up_sha }}"
+          mirror_sha="${MIRROR_SHA}"
 
-          # Identity for annotated tags
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Authenticate pushes with GITHUB_TOKEN (since persist-credentials is false)
-          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git remote set-url origin "https://x-access-token:${PAT}@github.com/${REPO}.git"
 
-          # Create + push tag
-          git tag -a "$tag" "$up_sha" -m "Mirror upstream commit $up_sha"
+          git tag -a "$tag" "$mirror_sha" -m "Mirror upstream commit ${{ steps.meta.outputs.up_sha }} (workflows stripped)"
           git push origin "refs/tags/$tag"
 
-      - name: Check out upstream commit into a worktree for packaging
+      - name: Check out mirrored commit into a worktree for packaging
         if: steps.skip.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          up_sha="${{ steps.meta.outputs.up_sha }}"
-          git worktree add --force _pkg "$up_sha"
+          mirror_sha="${MIRROR_SHA}"
+          git worktree add --force _pkg "$mirror_sha"
 
       - name: Build WowUp-compatible zip
         if: steps.skip.outputs.skip != 'true'
