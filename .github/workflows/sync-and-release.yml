@@ -25,10 +25,9 @@ jobs:
           source_repo: "Wolkenschutz/DecorTreasureHunt"
           source_branch: "main"
           destination_branch: "upstream"
-          github_token: ${{ secrets.PAT }}
+          # Use GITHUB_TOKEN so we don't need PAT workflow scope
+          github_token: ${{ github.token }}
           sync_tags: "true"
-          exclude: |
-            .github/workflows/**
 
       - name: Fetch updated upstream branch + tags
         run: |
@@ -57,10 +56,10 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create and push tag for this upstream commit (PAT auth)
+      - name: Create and push tag for this upstream commit (token auth)
         if: steps.skip.outputs.skip != 'true'
         env:
-          PAT: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -71,8 +70,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Authenticate pushes with PAT (since persist-credentials is false)
-          git remote set-url origin "https://x-access-token:${PAT}@github.com/${REPO}.git"
+          # Authenticate pushes with GITHUB_TOKEN (since persist-credentials is false)
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 
           # Create + push tag
           git tag -a "$tag" "$up_sha" -m "Mirror upstream commit $up_sha"
