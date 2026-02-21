@@ -27,6 +27,8 @@ jobs:
           destination_branch: "upstream"
           github_token: ${{ secrets.PAT }}
           sync_tags: "true"
+          exclude: |
+            .github/workflows/**
 
       - name: Fetch updated upstream branch + tags
         run: |
